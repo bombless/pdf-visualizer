@@ -134,6 +134,7 @@ endobj
                         }
                         next_pos = stream_start+data_length;
                         parser.info.objects.last_mut().unwrap().stream = read;
+                        println!("{stream_start:0x} stream fetched")
                     }
                     Ok(_) => println!("no stream"),
                     Err(err) => panic!("{}", err),
@@ -406,7 +407,7 @@ fn decode(data: &[u8]) -> (usize, Vec<u8>) {
 
 #[derive(Debug)]
 enum Data {
-    Flate(usize),
+    Flate,
     Plain(usize),
 }
 
@@ -414,7 +415,7 @@ impl Data {
     fn read(self, data: &[u8]) -> (usize, Vec<u8>) {
         match self {
             Data::Plain(n) => (n, data[..n].into()),
-            Data::Flate(n) => decode(&data[..n]),
+            Data::Flate => decode(data),
         }
     }
 }
