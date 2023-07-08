@@ -48,6 +48,16 @@ enum Value {
     List(Vec<Value>),
 }
 
+
+fn write_bin(data: &[u8]) {
+    use std::fs::File;
+    use std::io::prelude::*;
+
+    let mut file = File::create("../bin.gz").unwrap();
+    
+    file.write_all(data).unwrap();
+}
+
 fn main() {
     use std::mem::take;
 
@@ -67,7 +77,7 @@ fn main() {
       /FontFile2 7 0 R
     >>
 endobj
-    ".into()));
+    ".into()).is_ok());
 
     let mut line_count = 1;
     let mut line_offset = 0;
@@ -76,14 +86,17 @@ endobj
     let mut start_pos = (1, 0, String::new());
     let mut mask = false;
 
-    let mut start = 0;
+    let mut start = 1;
     let mut padding = 0;
     let mut offset = 0;
     let mut next_pos = 0;
+    let mut pads = vec![];
 
     for x in INPUT {
         if offset < next_pos {
             offset += 1;
+            padding += 1;
+            pads.push(format!("offset {:?} {:?}", offset, *x));
             continue;
         }
         offset += 1;
@@ -93,10 +106,6 @@ endobj
             line_error = 0;
             line_offset = 0;
             mask = false;
-            if cache.is_empty() {
-                padding += 1;
-                continue
-            }
         }
         line_offset += 1;
         if x == &b'%' {
@@ -104,27 +113,35 @@ endobj
         }
         if mask {
             padding += 1;
+            pads.push(format!("offset {:?} {:?}", offset - 1, *x));
             continue
         }
         if !x.is_ascii() {
-            padding += 1;
-            line_error += 1;
-            if !cache.is_empty() && line_error <= 1 {
+            if !cache.is_empty() && line_error == 0 {
                 println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset - 1)));
                 let result = parser.handle_fragment(take(&mut cache));
                 match result {
-                    Ok(Some(data)) => {
-                        let (len, read) = data.read(&INPUT[offset - 1..]);
-                        next_pos = start + len;
+                    Ok((len, Some((size, f)))) => {
+                        let stream_start = start + len - 1 + padding;
+                        println!("{stream_start:0x} = {start:0x} + {len:0x} - 1 + {padding:0x}");
+                        let data_length = f(&INPUT[stream_start..]);
+                        println!("okay, from {:0x} to {:0x}", stream_start, stream_start+data_length);
+                        println!("{:0x} is {:0x}", stream_start, INPUT[stream_start]);
+                        println!("{:0x} is {:0x}", stream_start+data_length, INPUT[stream_start+data_length]);
+                        write_bin(&INPUT[stream_start..stream_start+data_length]);
+                        let (len, read) = decode(&INPUT[stream_start..stream_start+data_length]);
+                        next_pos = stream_start+data_length+1;
                         parser.info.objects.last_mut().unwrap().stream = read;
                         println!("from {:0x} read {}", offset - 1, len);
                     }
-                    Ok(None) => println!("no stream"),
+                    Ok(_) => println!("no stream"),
                     Err(err) => panic!("{}", err),
                 }
                 start = offset;
                 padding = 0;
             }
+            padding += 1;
+            line_error += 1;
             start_pos = (line_count, line_offset, format!("{:0x}", offset - 1));
             println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset - 1, x);
         } else {
@@ -141,7 +158,7 @@ impl Parser {
         Self { wait_stream: false, info: Info { objects: vec![] }}
     }
 
-    fn handle_fragment(&mut self, input: String) -> Result<Option<Data>, Box<dyn Error>> {
+    fn handle_fragment(&mut self, input: String) -> Result<(usize, Option<(usize, fn(&[u8])->usize)>), Box<dyn Error>> {
         // println!(":{}", input);
         let mut offset = 0;
         if self.wait_stream {
@@ -155,7 +172,7 @@ impl Parser {
                 x
             } else {
                 println!("try_object_start {try_object_start:?}");
-                return Ok(None)
+                return Ok((offset, None))
             };
             offset += len;
             let (len, dict) = self.parse_dict(&input[..][offset..]).unwrap();
@@ -179,12 +196,16 @@ impl Parser {
                     }
                 }
                 if let Some(Value::Number(n)) = length {
-                    return Ok(Some(Data::Flate(n as _)))
+                    fn f(x: &[u8]) -> usize {
+                        let sub_bytes : &'static [u8] = b"endstream\n";
+                        x.windows(sub_bytes.len()).position(|window| window == sub_bytes).unwrap()
+                    }
+                    return Ok((offset, Some((n as _, f))))
                 }
                 return get_error!("Length missing")
             }
         }
-        Ok(None)
+        Ok((offset, None))
     }
 
     fn expect_obj_start(&mut self, starter: &str) -> Result<(usize, (u8, u8)), Box<dyn Error>> {
@@ -208,8 +229,8 @@ impl Parser {
     }
 
     fn expect_stream_end(&mut self, tail: &str) -> Result<(usize, ()), Box<dyn Error>> {
-        if tail.starts_with("endstream\nendobj\n") {
-            Ok(("endstream\nendobj\n".len(), ()))
+        if tail.starts_with("\nendstream\nendobj\n") {
+            Ok(("\nendstream\nendobj\n".len(), ()))
         } else {
             get_error!(get_heading(tail))
         }
@@ -233,7 +254,7 @@ impl Parser {
             offset += len;
             let (len, v) = self.parse_value(&stream[offset..])?;
             offset += len;
-            println!("{:?} {:?}", k, v);
+            // println!("{:?} {:?}", k, v);
             ret.insert(k, v);
         }
     }
