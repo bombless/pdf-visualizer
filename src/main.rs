@@ -120,23 +120,18 @@ endobj
                 println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset)));
                 let result = parser.handle_fragment(take(&mut cache));
                 match result {
-                    Ok((len, Some((size, f)))) => {
-                        let stream_start = start + len + padding;
-                        println!("{stream_start:0x} = {start:0x} + {len:0x} + {padding:0x}");
-                        let data_length = f(&INPUT[stream_start..]);
-                        println!("okay, from {:0x} to {:0x}", stream_start, stream_start+data_length);
-                        println!("{:0x} is {:0x}", stream_start, INPUT[stream_start]);
-                        println!("{:0x} is {:0x}", stream_start+data_length, INPUT[stream_start+data_length]);
-                        write_bin(&INPUT[stream_start..stream_start+data_length]);
-                        let (len, read) = decode(&INPUT[stream_start..stream_start+data_length]);
-                        if len != size {
-                            println!("len {len} size {size}")
+                    Ok(ask_data) => {
+                        if let Some(len) = ask_data.stream_offset() {
+                            let stream_start = start + len + padding;
+                            println!("{stream_start:0x} = {start:0x} + {len:0x} + {padding:0x}");
+                            let (len, read) = ask_data.read(&INPUT[stream_start..]).unwrap();
+                            next_pos = stream_start+len;
+                            parser.info.objects.last_mut().unwrap().stream = read;
+                            println!("{stream_start:0x} to {:0x} stream fetched ", stream_start + len);
+                        } else {
+                            println!("no stream here {:0x}", start + padding)
                         }
-                        next_pos = stream_start+data_length;
-                        parser.info.objects.last_mut().unwrap().stream = read;
-                        println!("{stream_start:0x} stream fetched")
                     }
-                    Ok(_) => println!("no stream"),
                     Err(err) => panic!("{}", err),
                 }
                 start = offset;
@@ -160,7 +155,7 @@ impl Parser {
         Self { wait_stream: false, info: Info { objects: vec![] }}
     }
 
-    fn handle_fragment(&mut self, input: String) -> Result<(usize, Option<(usize, fn(&[u8])->usize)>), Box<dyn Error>> {
+    fn handle_fragment(&mut self, input: String) -> Result<AskData, Box<dyn Error>> {
         // println!(":{}", input);
         let mut offset = 0;
         if self.wait_stream {
@@ -174,7 +169,7 @@ impl Parser {
                 x
             } else {
                 println!("try_object_start {try_object_start:?}");
-                return Ok((offset, None))
+                return Ok(AskData::Nope(offset))
             };
             offset += len;
             let (len, dict) = self.parse_dict(&input[..][offset..]).unwrap();
@@ -192,22 +187,29 @@ impl Parser {
             offset += len;
             // println!("remaining <<<<<<\n{}\n>>>>>>>>", &input[..][offset..]);
             if want_stream {
-                if let Some(Value::Key(f)) = filter {
-                    if f != "FlateDecode" {
+                let length = if let Some(Value::Number(n)) = length {
+                    n as _
+                } else {
+                    return get_error!("Length is strange now")
+                };
+                if filter.is_none() {
+                    return Ok(AskData::Plain(offset, length))
+                }
+                else if let Some(Value::Key(filter)) = filter {
+                    if filter != "FlateDecode" {
                         panic!("unknown filter")
                     }
-                }
-                if let Some(Value::Number(n)) = length {
                     fn f(x: &[u8]) -> usize {
-                        let sub_bytes : &'static [u8] = b"endstream\n";
-                        x.windows(sub_bytes.len()).position(|window| window == sub_bytes).unwrap()
+                        let sub_bytes : &'static [u8] = b"\nendstream\n";
+                        x.windows(sub_bytes.len()).position(|window| window == sub_bytes).unwrap() + 1
                     }
-                    return Ok((offset, Some((n as _, f))))
+                    return Ok(AskData::Flate(offset, length, f))
                 }
+                
                 return get_error!("Length missing")
             }
         }
-        Ok((offset, None))
+        Ok(AskData::Nope(offset))
     }
 
     fn expect_obj_start(&mut self, starter: &str) -> Result<(usize, (u8, u8)), Box<dyn Error>> {
@@ -406,16 +408,32 @@ fn decode(data: &[u8]) -> (usize, Vec<u8>) {
 }
 
 #[derive(Debug)]
-enum Data {
-    Flate,
-    Plain(usize),
+enum AskData {
+    Nope(usize),
+    Flate(usize, usize, fn(&[u8])->usize),
+    Plain(usize, usize),
 }
 
-impl Data {
-    fn read(self, data: &[u8]) -> (usize, Vec<u8>) {
+impl AskData {
+    fn stream_offset(&self) -> Option<usize> {
         match self {
-            Data::Plain(n) => (n, data[..n].into()),
-            Data::Flate => decode(data),
+            AskData::Plain(r, ..) | AskData::Flate(r, ..) => Some(*r),
+            AskData::Nope(_, ..) => None,
+        }
+    }
+    fn read(self, data: &[u8]) -> Option<(usize, Vec<u8>)> {
+        match self {
+            AskData::Nope(_) => None,
+            AskData::Plain(_, n) => Some((n, data[..n].into())),
+            AskData::Flate(_, expected_size, f) => {
+                let offset = f(data);
+                println!("stream:: length: {offset:0x} start: {:0x} end: {:0x}({})", data[0], data[offset], data[offset] as char);
+                let (actual_size, data) = decode(&data[..offset]);
+                if expected_size != actual_size {
+                    println!("decompressed data length is strange, expected {expected_size} got {actual_size}")
+                }
+                Some((offset, data))
+            },
         }
     }
 }
