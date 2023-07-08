@@ -198,16 +198,13 @@ impl Parser {
 
     fn parse_value(&mut self, stream: &str) -> Result<(usize, Value), Box<dyn Error>> {
         let re = Regex::new(r"^\s*(\S)").unwrap();
-        let trimed = stream.trim_start();
-        let offset = stream.len() - trimed.len();
-        let map_fn = |(x, y)| (x + offset, y);
-        let captures = re.captures(trimed);
+        let captures = re.captures(stream);
         let first_char = captures.map(|x| x[1].as_bytes().get(0).map(u8::to_owned)).flatten();
         // println!("first_char, {:?} ... {}? {}? {:?}", first_char, b'<', b'/', first_char.map(|x| x as char));
         match first_char {
-            Some(b'<') => wrap(self.parse_dict(stream), Value::Dict).map(map_fn),
-            Some(b'/') => wrap(self.parse_key(stream), Value::Key).map(map_fn),
-            Some(b'[') => wrap(self.parse_ref(stream), Value::Ref).map(map_fn),
+            Some(b'<') => wrap(self.parse_dict(stream), Value::Dict),
+            Some(b'/') => wrap(self.parse_key(stream), Value::Key),
+            Some(b'[') => wrap(self.parse_ref(stream), Value::Ref),
             Some(c) if c > b'0' && c <= b'9' => wrap(self.parse_single_ref(stream), Value::Ref),
             _ => {
                 println!("parse_value failed {:?}", stream);
