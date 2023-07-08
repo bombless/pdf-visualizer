@@ -24,11 +24,12 @@ macro_rules! get_error {
 
 
 struct Parser {
-    info: Info
+    info: Info,
+    wait_stream: bool,
 }
 
 struct Info {
-    objects: Vec<Object>
+    objects: Vec<Object>,
 }
 
 struct Object {
@@ -37,13 +38,13 @@ struct Object {
     stream: Vec<u8>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum Value {
     Key(String),
     Dict(HashMap<String, Value>),
     Ref((u8, u8)),
     String(String),
-    Number(u32),
+    Number(f64),
     List(Vec<Value>),
 }
 
@@ -51,20 +52,19 @@ fn main() {
     use std::mem::take;
 
     let mut parser = Parser::new();
-    println!("{:?}", parser.handle_fragment(r"4 0 obj
+    println!("{:?}", parser.handle_fragment(r"
+    5 0 obj
     <<
-      /Type /Font
-      /Subtype /CIDFontType2
-      /BaseFont /ABCDEF#2BKaiTi
-      /CIDSystemInfo <<
-        /Registry (Adobe)
-        /Ordering (Identity)
-        /Supplement 0
-      >>
-      /FontDescriptor 5 0 R
-      /DW 0
-      /CIDToGIDMap /Identity
-      /W [1430 1430 1000 4019 4019 1000]
+      /Type /FontDescriptor
+      /FontName /ABCDEF#2BKaiTi
+      /Flags 131076
+      /FontBBox [-46.875 -183.59375 1031.25 859.375]
+      /ItalicAngle 0
+      /Ascent 859.375
+      /Descent -140.625
+      /CapHeight 687.5
+      /StemV 95.4
+      /FontFile2 7 0 R
     >>
 endobj
     ".into()));
@@ -73,29 +73,60 @@ endobj
     let mut line_offset = 0;
     let mut line_error = 0;
     let mut cache = String::new();
-    let mut start_pos = (1, 0);
+    let mut start_pos = (1, 0, String::new());
     let mut mask = false;
+
+    let mut start = 0;
+    let mut padding = 0;
+    let mut offset = 0;
+    let mut next_pos = 0;
+
     for x in INPUT {
+        if offset < next_pos {
+            offset += 1;
+            continue;
+        }
+        offset += 1;
+
         if x == &0xa {
             line_count += 1;
             line_error = 0;
             line_offset = 0;
             mask = false;
-            if cache.is_empty() { continue }
+            if cache.is_empty() {
+                padding += 1;
+                continue
+            }
         }
         line_offset += 1;
         if x == &b'%' {
             mask = true;
         }
-        if mask { continue }
+        if mask {
+            padding += 1;
+            continue
+        }
         if !x.is_ascii() {
+            padding += 1;
             line_error += 1;
             if !cache.is_empty() && line_error <= 1 {
-                println!("[{:?}-{:?}]", start_pos, (line_count, line_offset));
-                parser.handle_fragment(take(&mut cache)).unwrap();
+                println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset - 1)));
+                let result = parser.handle_fragment(take(&mut cache));
+                match result {
+                    Ok(Some(data)) => {
+                        let (len, read) = data.read(&INPUT[offset - 1..]);
+                        next_pos = start + len;
+                        parser.info.objects.last_mut().unwrap().stream = read;
+                        println!("from {:0x} read {}", offset - 1, len);
+                    }
+                    Ok(None) => println!("no stream"),
+                    Err(err) => panic!("{}", err),
+                }
+                start = offset;
+                padding = 0;
             }
-            start_pos = (line_count, line_offset);
-            println!("[{},{}]{:0x}", line_count, line_offset, x);
+            start_pos = (line_count, line_offset, format!("{:0x}", offset - 1));
+            println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset - 1, x);
         } else {
             if x == &7 {
                 println!("ring bell line {}", line_count)
@@ -107,42 +138,57 @@ endobj
 
 impl Parser {
     fn new() -> Self {
-        Self { info: Info { objects: vec![] }}
+        Self { wait_stream: false, info: Info { objects: vec![] }}
     }
 
-    fn handle_fragment(&mut self, input: String) -> Result<(), Box<dyn Error>> {
+    fn handle_fragment(&mut self, input: String) -> Result<Option<Data>, Box<dyn Error>> {
         // println!(":{}", input);
         let mut offset = 0;
-        loop {
-            while input[..][offset..].starts_with("\n\n") {
-                offset += 1;
-            }
+        if self.wait_stream {
+            self.wait_stream = false;
+            let (len, ()) = self.expect_stream_end(&input)?;
+            offset += len;
+        }
+        while offset < input.len() {
             let try_object_start = self.expect_obj_start(&input[..][offset..]);
             let (len, id) = if let Ok(x) = try_object_start {
                 x
             } else {
                 println!("try_object_start {try_object_start:?}");
-                return Ok(())
+                return Ok(None)
             };
             offset += len;
             let (len, dict) = self.parse_dict(&input[..][offset..]).unwrap();
             offset += len;
             println!("{:?}", dict);
+            let length = dict.get("Length").map(Value::clone);
+            let filter = dict.get("Filter").map(Value::clone);
             let object = Object {
                 id,
                 dict,
                 stream: vec![],
             };
             self.info.objects.push(object);
-            let (len, ()) = self.expect_obj_end(&input[..][offset..])?;
+            let (len, want_stream) = self.expect_obj_end(&input[..][offset..])?;
             offset += len;
-            println!("remaining <<<<<<\n{}\n>>>>>>>>", &input[..][offset..]);
+            // println!("remaining <<<<<<\n{}\n>>>>>>>>", &input[..][offset..]);
+            if want_stream {
+                if let Some(Value::Key(f)) = filter {
+                    if f != "FlateDecode" {
+                        panic!("unknown filter")
+                    }
+                }
+                if let Some(Value::Number(n)) = length {
+                    return Ok(Some(Data::Flate(n as _)))
+                }
+                return get_error!("Length missing")
+            }
         }
-        get_error!(&input[..][offset..])
+        Ok(None)
     }
 
     fn expect_obj_start(&mut self, starter: &str) -> Result<(usize, (u8, u8)), Box<dyn Error>> {
-        let re = Regex::new("^(\\d) (\\d) obj\n").unwrap();
+        let re = Regex::new("^\\s*(\\d) (\\d) obj\n").unwrap();
         if let Some(captures) = re.captures(starter) {
             let id: (u8, u8) = (captures[1].parse()?, captures[2].parse()?);
             return Ok((captures[0].len(), id));
@@ -150,9 +196,20 @@ impl Parser {
         get_error!(starter)
     }
 
-    fn expect_obj_end(&mut self, tail: &str) -> Result<(usize, ()), Box<dyn Error>> {
+    fn expect_obj_end(&mut self, tail: &str) -> Result<(usize, bool), Box<dyn Error>> {
         if tail.starts_with("\nendobj\n") {
-            Ok(("\nendobj\n".len(), ()))
+            Ok(("\nendobj\n".len(), false))
+        } else if tail.starts_with("\nstream\n") {
+            self.wait_stream = true;
+            Ok(("\nstream\n".len(), true))
+        } else {
+            get_error!(get_heading(tail))
+        }
+    }
+
+    fn expect_stream_end(&mut self, tail: &str) -> Result<(usize, ()), Box<dyn Error>> {
+        if tail.starts_with("endstream\nendobj\n") {
+            Ok(("endstream\nendobj\n".len(), ()))
         } else {
             get_error!(get_heading(tail))
         }
@@ -216,8 +273,8 @@ impl Parser {
         get_error!(get_first_line(stream))
     }
 
-    fn parse_number(&mut self, stream: &str) -> Result<(usize, u32), Box<dyn Error>> {
-        let re = Regex::new(r"^\s*(\d+)").unwrap();
+    fn parse_number(&mut self, stream: &str) -> Result<(usize, f64), Box<dyn Error>> {
+        let re = Regex::new(r"^\s*(-?\d*\.?\d*)").unwrap();
         if let Some(captures) = re.captures(stream) {
             return Ok((captures[0].len(), captures[1].parse().unwrap()));
         }
@@ -264,6 +321,7 @@ impl Parser {
             Some(b'/') => wrap(self.parse_key(stream), Value::Key),
             Some(b'[') => wrap(self.parse_list(stream), Value::List),
             Some(b'(') => wrap(self.parse_string(stream), Value::String),
+            Some(b'-') | Some(b'.') => wrap(self.parse_number(stream), Value::Number),
             Some(c) if c >= b'0' && c <= b'9' => {
                 let rf = self.parse_ref(stream);
                 if rf.is_ok() { wrap(rf, Value::Ref) }
@@ -272,7 +330,7 @@ impl Parser {
                 }
             }
             _ => {
-                println!("parse_value failed {:?}", stream);
+                if !stream.trim_start().starts_with("]") { println!("parse_value failed {:?}", stream) };
                 get_error!(stream)
             }
         }
@@ -310,5 +368,31 @@ fn get_heading(text: &str) -> &str {
         }
     } else {
         &text[..]
+    }
+}
+
+fn decode(data: &[u8]) -> (usize, Vec<u8>) {
+    use std::io::Read;
+    use flate2::bufread::ZlibDecoder;
+
+    let mut decoder = ZlibDecoder::new(data);
+    let mut decompressed_data = Vec::new();
+    
+    let len = decoder.read_to_end(&mut decompressed_data).unwrap();
+    (len, decompressed_data)
+}
+
+#[derive(Debug)]
+enum Data {
+    Flate(usize),
+    Plain(usize),
+}
+
+impl Data {
+    fn read(self, data: &[u8]) -> (usize, Vec<u8>) {
+        match self {
+            Data::Plain(n) => (n, data[..n].into()),
+            Data::Flate(n) => decode(&data[..n]),
+        }
     }
 }
