@@ -93,13 +93,13 @@ endobj
     let mut pads = vec![];
 
     for offset in 0 .. INPUT.len() {
-        println!("offset {offset:x}");
         let x = INPUT[offset];
         if offset < next_pos {
             padding += 1;
             pads.push(format!("offset {:?} {:?}", offset, x));
             continue;
         }
+        // println!("offset {offset:x}");
 
         if x == 0xa {
             line_count += 1;
@@ -127,15 +127,10 @@ endobj
                             let stream_start = base + len;
                             println!("{stream_start:0x}(stream_start) = \
                                 {base:0x}(base) + \
-                                {len:0x}(object header, from {} to {})", INPUT[base] as char, INPUT[base + len] as char);
+                                {len:0x}(object header, from {} to {})", INPUT[base] as char, INPUT[stream_start] as char);
                                 print!("{:x}:", base);
                                 for i in 0 .. 10 {
                                     print!("{}", INPUT[base + i] as char);
-                                }
-                                println!();
-                                print!("{:x}:", base + len - 5);
-                                for i in 5 .. 1 {
-                                    print!("{}", INPUT[base + len - i] as char);
                                 }
                                 println!();
                             let (len, read) = ask_data.read(&INPUT[stream_start..]).unwrap();
@@ -143,7 +138,6 @@ endobj
                             parser.info.objects.last_mut().unwrap().stream = read;
                             println!("{stream_start:0x} to {:0x} stream fetched, data length {len}", stream_start + len);
                             println!("{stream_start} + {len} = {}", stream_start + len);
-                            println!("")
                         } else {
                             println!("no stream here {:0x}", start + padding)
                         }
@@ -152,11 +146,12 @@ endobj
                 }
                 start = offset;
                 padding = 0;
+            } else {
+                println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset, x);
             }
             padding += 1;
             line_error += 1;
             start_pos = (line_count, line_offset, format!("{:0x}", offset));
-            println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset, x);
         } else {
             if x == 7 {
                 println!("ring bell line {}", line_count)
