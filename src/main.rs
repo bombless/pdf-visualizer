@@ -86,53 +86,54 @@ endobj
     let mut start_pos = (1, 0, String::new());
     let mut mask = false;
 
-    let mut start = 1;
+    let mut start = 0;
     let mut padding = 0;
-    let mut offset = 0;
+    
     let mut next_pos = 0;
     let mut pads = vec![];
 
-    for x in INPUT {
+    for offset in 0 .. INPUT.len() {
+        let x = INPUT[offset];
         if offset < next_pos {
-            offset += 1;
             padding += 1;
-            pads.push(format!("offset {:?} {:?}", offset, *x));
+            pads.push(format!("offset {:?} {:?}", offset, x));
             continue;
         }
-        offset += 1;
 
-        if x == &0xa {
+        if x == 0xa {
             line_count += 1;
             line_error = 0;
             line_offset = 0;
             mask = false;
         }
         line_offset += 1;
-        if x == &b'%' {
+        if x == b'%' {
             mask = true;
         }
         if mask {
             padding += 1;
-            pads.push(format!("offset {:?} {:?}", offset - 1, *x));
+            pads.push(format!("offset {:?} {:?}", offset, x));
             continue
         }
         if !x.is_ascii() {
             if !cache.is_empty() && line_error == 0 {
-                println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset - 1)));
+                println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset)));
                 let result = parser.handle_fragment(take(&mut cache));
                 match result {
                     Ok((len, Some((size, f)))) => {
-                        let stream_start = start + len - 1 + padding;
-                        println!("{stream_start:0x} = {start:0x} + {len:0x} - 1 + {padding:0x}");
+                        let stream_start = start + len + padding;
+                        println!("{stream_start:0x} = {start:0x} + {len:0x} + {padding:0x}");
                         let data_length = f(&INPUT[stream_start..]);
                         println!("okay, from {:0x} to {:0x}", stream_start, stream_start+data_length);
                         println!("{:0x} is {:0x}", stream_start, INPUT[stream_start]);
                         println!("{:0x} is {:0x}", stream_start+data_length, INPUT[stream_start+data_length]);
                         write_bin(&INPUT[stream_start..stream_start+data_length]);
                         let (len, read) = decode(&INPUT[stream_start..stream_start+data_length]);
-                        next_pos = stream_start+data_length+1;
+                        if len != size {
+                            println!("len {len} size {size}")
+                        }
+                        next_pos = stream_start+data_length;
                         parser.info.objects.last_mut().unwrap().stream = read;
-                        println!("from {:0x} read {}", offset - 1, len);
                     }
                     Ok(_) => println!("no stream"),
                     Err(err) => panic!("{}", err),
@@ -142,13 +143,13 @@ endobj
             }
             padding += 1;
             line_error += 1;
-            start_pos = (line_count, line_offset, format!("{:0x}", offset - 1));
-            println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset - 1, x);
+            start_pos = (line_count, line_offset, format!("{:0x}", offset));
+            println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset, x);
         } else {
-            if x == &7 {
+            if x == 7 {
                 println!("ring bell line {}", line_count)
             }
-            cache.push(*x as _)
+            cache.push(x as _)
         }
     }
 }
@@ -209,7 +210,7 @@ impl Parser {
     }
 
     fn expect_obj_start(&mut self, starter: &str) -> Result<(usize, (u8, u8)), Box<dyn Error>> {
-        let re = Regex::new("^\\s*(\\d) (\\d) obj\n").unwrap();
+        let re = Regex::new("^\\s*(\\d+) (\\d+) obj\n").unwrap();
         if let Some(captures) = re.captures(starter) {
             let id: (u8, u8) = (captures[1].parse()?, captures[2].parse()?);
             return Ok((captures[0].len(), id));
@@ -229,8 +230,8 @@ impl Parser {
     }
 
     fn expect_stream_end(&mut self, tail: &str) -> Result<(usize, ()), Box<dyn Error>> {
-        if tail.starts_with("\nendstream\nendobj\n") {
-            Ok(("\nendstream\nendobj\n".len(), ()))
+        if tail.starts_with("endstream\nendobj\n") {
+            Ok(("endstream\nendobj\n".len(), ()))
         } else {
             get_error!(get_heading(tail))
         }
