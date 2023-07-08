@@ -51,7 +51,7 @@ fn main() {
     use std::mem::take;
 
     let mut parser = Parser::new();
-    return println!("{:?}", parser.handle_fragment(r"4 0 obj
+    println!("{:?}", parser.handle_fragment(r"4 0 obj
     <<
       /Type /Font
       /Subtype /CIDFontType2
@@ -121,7 +121,7 @@ impl Parser {
             let (len, id) = if let Ok(x) = try_object_start {
                 x
             } else {
-                // println!("remaining {:?}", &input[..][offset..]);
+                println!("try_object_start {try_object_start:?}");
                 return Ok(())
             };
             offset += len;
