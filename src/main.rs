@@ -93,6 +93,7 @@ endobj
     let mut pads = vec![];
 
     for offset in 0 .. INPUT.len() {
+        println!("offset {offset:x}");
         let x = INPUT[offset];
         if offset < next_pos {
             padding += 1;
@@ -122,12 +123,27 @@ endobj
                 match result {
                     Ok(ask_data) => {
                         if let Some(len) = ask_data.stream_offset() {
-                            let stream_start = start + len + padding;
-                            println!("{stream_start:0x} = {start:0x} + {len:0x} + {padding:0x}");
+                            let base = start + padding;
+                            let stream_start = base + len;
+                            println!("{stream_start:0x}(stream_start) = \
+                                {base:0x}(base) + \
+                                {len:0x}(object header, from {} to {})", INPUT[base] as char, INPUT[base + len] as char);
+                                print!("{:x}:", base);
+                                for i in 0 .. 10 {
+                                    print!("{}", INPUT[base + i] as char);
+                                }
+                                println!();
+                                print!("{:x}:", base + len - 5);
+                                for i in 5 .. 1 {
+                                    print!("{}", INPUT[base + len - i] as char);
+                                }
+                                println!();
                             let (len, read) = ask_data.read(&INPUT[stream_start..]).unwrap();
                             next_pos = stream_start+len;
                             parser.info.objects.last_mut().unwrap().stream = read;
-                            println!("{stream_start:0x} to {:0x} stream fetched ", stream_start + len);
+                            println!("{stream_start:0x} to {:0x} stream fetched, data length {len}", stream_start + len);
+                            println!("{stream_start} + {len} = {}", stream_start + len);
+                            println!("")
                         } else {
                             println!("no stream here {:0x}", start + padding)
                         }
@@ -197,7 +213,7 @@ impl Parser {
                 }
                 else if let Some(Value::Key(filter)) = filter {
                     if filter != "FlateDecode" {
-                        panic!("unknown filter")
+                        panic!("Unknown filter")
                     }
                     fn f(x: &[u8]) -> usize {
                         let sub_bytes : &'static [u8] = b"\nendstream\n";
@@ -431,6 +447,8 @@ impl AskData {
                 let (actual_size, data) = decode(&data[..offset]);
                 if expected_size != actual_size {
                     println!("decompressed data length is strange, expected {expected_size} got {actual_size}")
+                } else {
+                    println!("!!great, decompressed data length is fine")
                 }
                 Some((offset, data))
             },
