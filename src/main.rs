@@ -40,7 +40,8 @@ struct Object {
 #[derive(Debug)]
 enum Value {
     Key(String),
-    Dict(HashMap<String, Value>)
+    Dict(HashMap<String, Value>),
+    Ref((u8, u8)),
 }
 
 fn main() {
@@ -90,6 +91,7 @@ impl Parser {
     }
 
     fn handle_fragment(&mut self, input: String) -> Result<(), Box<dyn Error>> {
+        println!("{}", input);
         let first_line = get_first_line(&input);
         self.handle_obj_start(first_line)?;
         self.parse_dict(&input[..][first_line.len() + 1..])?;
@@ -135,6 +137,15 @@ impl Parser {
         }
     }
 
+    fn parse_ref(&mut self, stream: &str) -> Result<(usize, (u8, u8)), Box<dyn Error>> {
+        let re = Regex::new(r"^\s*\[(\d+)\s+(\d+)\s+R\]").unwrap();
+        if let Some(captures) = re.captures(stream) {
+            let id: (u8, u8) = (captures[1].parse()?, captures[2].parse()?);
+            return Ok((captures[0].len(), id));
+        }
+        get_error!(get_first_line(stream))
+    }
+
     fn parse_value(&mut self, stream: &str) -> Result<(usize, Value), Box<dyn Error>> {
         let re = Regex::new(r"^\s*(\S)").unwrap();
         let captures = re.captures(stream);
@@ -143,7 +154,8 @@ impl Parser {
         match first_char {
             Some(b'<') => wrap(self.parse_dict(stream), Value::Dict),
             Some(b'/') => wrap(self.parse_key(stream), Value::Key),
-            _ => get_error!(get_first_line(stream))
+            Some(b'[') => wrap(self.parse_ref(stream), Value::Ref),
+            _ => get_error!(stream)
         }
     }
 
