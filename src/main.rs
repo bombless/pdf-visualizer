@@ -48,18 +48,79 @@ enum Value {
     List(Vec<Value>),
 }
 
+struct State {
+    line_count: i32,
+    line_offset: i32,
+    line_error: i32,
+    cache: String,
+    start_pos: (i32, i32, String),
+    mask: bool,
+    start: usize,
+    padding: usize,
+    next_pos: usize,
+    pads: Vec<String>,
+    parser: Parser,
+}
 
-fn write_bin(data: &[u8]) {
-    use std::fs::File;
-    use std::io::prelude::*;
+impl State {
+    fn new() -> Self {
+        Self {
+            line_count : 1,
+            line_offset : 0,
+            line_error : 0,
+            cache : String::new(),
+            start_pos : (1, 0, String::new()),
+            mask : false,
+        
+            start : 0,
+            padding : 0,
+            
+            next_pos : 0,
+            pads : vec![],
 
-    let mut file = File::create("../bin.gz").unwrap();
-    
-    file.write_all(data).unwrap();
+            parser: Parser::new(),
+        }
+    }
+
+    fn parse(&mut self, offset: usize) {
+        use std::mem::take;
+
+        println!("[{:?}-{:?}]", self.start_pos, (self.line_count, self.line_offset, format!("{:0x}", offset)));
+        let result = self.parser.handle_fragment(take(&mut self.cache));
+        match result {
+            Ok(ask_data) => {
+                if let Some(len) = ask_data.stream_offset() {
+                    let base = self.start + self.padding;
+                    let stream_start = base + len;
+                    println!("{stream_start:0x}(stream_start) = \
+                        {base:0x}(base) + \
+                        {len:0x}(object header, from {} to {})", INPUT[base] as char, INPUT[stream_start] as char);
+                        print!("{:x}:", base);
+                        for i in 0 .. 10 {
+                            print!("{}", INPUT[base + i] as char);
+                        }
+                        println!();
+                    let (len, read) = ask_data.read(&INPUT[stream_start..]).unwrap();
+                    self.next_pos = stream_start+len;
+                    self.parser.info.objects.last_mut().unwrap().stream = read;
+                    println!("{stream_start:0x} to {:0x} stream fetched, data length {len}", stream_start + len);
+                    println!("{stream_start} + {len} = {}", stream_start + len);
+                    println!("next: {:x}", INPUT[stream_start + len]);
+                    if stream_start + len == 0x168c {
+                        println!("hello");
+                    }
+                } else {
+                    println!("no stream here {:0x}", self.start + self.padding)
+                }
+            }
+            Err(err) => panic!("{}", err),
+        }
+        self.start = offset;
+        self.padding = 0;
+    }
 }
 
 fn main() {
-    use std::mem::take;
 
     let mut parser = Parser::new();
     println!("{:?}", parser.handle_fragment(r"
@@ -79,86 +140,49 @@ fn main() {
 endobj
     ".into()).is_ok());
 
-    let mut line_count = 1;
-    let mut line_offset = 0;
-    let mut line_error = 0;
-    let mut cache = String::new();
-    let mut start_pos = (1, 0, String::new());
-    let mut mask = false;
-
-    let mut start = 0;
-    let mut padding = 0;
-    
-    let mut next_pos = 0;
-    let mut pads = vec![];
+    let mut state = State::new();
 
     for offset in 0 .. INPUT.len() {
         let x = INPUT[offset];
-        if offset < next_pos {
-            padding += 1;
-            pads.push(format!("offset {:?} {:?}", offset, x));
+        if offset < state.next_pos {
+            state.padding += 1;
+            state.pads.push(format!("offset {:?} {:?}", offset, x));
             continue;
         }
         // println!("offset {offset:x}");
 
         if x == 0xa {
-            line_count += 1;
-            line_error = 0;
-            line_offset = 0;
-            mask = false;
+            state.line_count += 1;
+            state.line_error = 0;
+            state.line_offset = 0;
+            state.mask = false;
         }
-        line_offset += 1;
+        state.line_offset += 1;
         if x == b'%' {
-            mask = true;
+            state.mask = true;
         }
-        if mask {
-            padding += 1;
-            pads.push(format!("offset {:?} {:?}", offset, x));
+        if state.mask {
+            state.padding += 1;
+            state.pads.push(format!("offset {:?} {:?}", offset, x));
             continue
         }
         if !x.is_ascii() {
-            if !cache.is_empty() && line_error == 0 {
-                println!("[{:?}-{:?}]", start_pos, (line_count, line_offset, format!("{:0x}", offset)));
-                let result = parser.handle_fragment(take(&mut cache));
-                match result {
-                    Ok(ask_data) => {
-                        if let Some(len) = ask_data.stream_offset() {
-                            let base = start + padding;
-                            let stream_start = base + len;
-                            println!("{stream_start:0x}(stream_start) = \
-                                {base:0x}(base) + \
-                                {len:0x}(object header, from {} to {})", INPUT[base] as char, INPUT[stream_start] as char);
-                                print!("{:x}:", base);
-                                for i in 0 .. 10 {
-                                    print!("{}", INPUT[base + i] as char);
-                                }
-                                println!();
-                            let (len, read) = ask_data.read(&INPUT[stream_start..]).unwrap();
-                            next_pos = stream_start+len;
-                            parser.info.objects.last_mut().unwrap().stream = read;
-                            println!("{stream_start:0x} to {:0x} stream fetched, data length {len}", stream_start + len);
-                            println!("{stream_start} + {len} = {}", stream_start + len);
-                        } else {
-                            println!("no stream here {:0x}", start + padding)
-                        }
-                    }
-                    Err(err) => panic!("{}", err),
-                }
-                start = offset;
-                padding = 0;
+            if !state.cache.is_empty() && state.line_error == 0 {
+                state.parse(offset);
             } else {
-                println!("[{},{},{:0x}]{:0x}", line_count, line_offset, offset, x);
+                println!("[{},{},{:0x}]{:0x}", state.line_count, state.line_offset, offset, x);
             }
-            padding += 1;
-            line_error += 1;
-            start_pos = (line_count, line_offset, format!("{:0x}", offset));
+            state.padding += 1;
+            state.line_error += 1;
+            state.start_pos = (state.line_count, state.line_offset, format!("{:0x}", offset));
         } else {
             if x == 7 {
-                println!("ring bell line {}", line_count)
+                println!("ring bell line {}", state.line_count)
             }
-            cache.push(x as _)
+            state.cache.push(x as _)
         }
     }
+    state.parse(INPUT.len())
 }
 
 impl Parser {
